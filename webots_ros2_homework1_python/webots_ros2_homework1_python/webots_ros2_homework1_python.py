@@ -13,7 +13,7 @@ import math
 
 
 LINEAR_VEL = 0.22
-STOP_DISTANCE = 0.2
+STOP_DISTANCE = 0.35
 LIDAR_ERROR = 0.05
 LIDAR_AVOID_DISTANCE = 0.7
 SAFE_STOP_DISTANCE = STOP_DISTANCE + LIDAR_ERROR
@@ -76,7 +76,7 @@ class RandomWalk(Node):
         self.pose_saved=position
         
         #Example of how to identify a stall..need better tuned position deltas; wheels spin and example fast
-        #diffX = math.fabs(self.pose_saved.x- position.x)
+        #diffX = math.fabs(self.pose_saveangulard.x- position.x)
         #diffY = math.fabs(self.pose_saved.y - position.y)
         #if (diffX < 0.0001 and diffY < 0.0001):
            #self.stall = True
@@ -104,23 +104,26 @@ class RandomWalk(Node):
 
         if front_lidar_min < SAFE_STOP_DISTANCE:
             if self.turtlebot_moving == True:
-                self.cmd.linear.x = 0.0 
-                self.cmd.angular.z = 0.0 
+                if (right_lidar_min >= left_lidar_min/2):
+                   self.cmd.angular.z = -(math.pi/16.0)
+                elif(right_lider_min / 2 <=):
+                else:
+                   self.cmd.angular.z = (math.pi/16.0)
                 self.publisher_.publish(self.cmd)
                 self.turtlebot_moving = True
                 self.get_logger().info('Stopping')
                 return
         elif front_lidar_min < LIDAR_AVOID_DISTANCE:
-                self.cmd.linear.x = 0.07 
+                self.cmd.linear.x = 0.03
                 if (right_lidar_min > left_lidar_min):
-                   self.cmd.angular.z = -0.3
+                   self.cmd.angular.z = -(math.pi/8.0)
                 else:
-                   self.cmd.angular.z = 0.3
+                   self.cmd.angular.z = (math.pi/16.0)
                 self.publisher_.publish(self.cmd)
                 self.get_logger().info('Turning')
                 self.turtlebot_moving = True
         else:
-            self.cmd.linear.x = 0.3
+            self.cmd.linear.x = 0.2
             self.cmd.linear.z = 0.0
             self.publisher_.publish(self.cmd)
             self.turtlebot_moving = True
