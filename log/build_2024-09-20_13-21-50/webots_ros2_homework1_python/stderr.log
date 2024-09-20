@@ -1,0 +1,5 @@
+  File "/home/ryan/Desktop/CS560/HW1/f24_robotics/install/webots_ros2_homework1_python/lib/python3.10/site-packages/webots_ros2_homework1_python/webots_ros2_homework1_python.py", line 109
+    elif(right_lider_min / 2 <=):
+                               ^
+SyntaxError: invalid syntax
+

@@ -14,7 +14,7 @@ import math
 
 LINEAR_VEL = 0.22
 STOP_DISTANCE = 0.35
-LIDAR_ERROR = 0.05
+LIDAR_ERROR = 0.10
 LIDAR_AVOID_DISTANCE = 0.7
 SAFE_STOP_DISTANCE = STOP_DISTANCE + LIDAR_ERROR
 RIGHT_SIDE_INDEX = 270
@@ -104,13 +104,10 @@ class RandomWalk(Node):
 
         if front_lidar_min < SAFE_STOP_DISTANCE:
             if self.turtlebot_moving == True:
-                if (right_lidar_min >= left_lidar_min/2):
-                   self.cmd.angular.z = -(math.pi/16.0)
-                elif(right_lider_min / 2 <=):
-                else:
-                   self.cmd.angular.z = (math.pi/16.0)
+                self.cmd.linear.x = 0.0
+                self.cmd.angular.z = -(math.pi/8.0)
                 self.publisher_.publish(self.cmd)
-                self.turtlebot_moving = True
+                self.turtlebot_moving = False
                 self.get_logger().info('Stopping')
                 return
         elif front_lidar_min < LIDAR_AVOID_DISTANCE:
