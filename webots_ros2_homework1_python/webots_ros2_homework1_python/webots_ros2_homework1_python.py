@@ -9,18 +9,22 @@ from nav_msgs.msg import Odometry
 # import Quality of Service library, to set the correct profile and reliability in order to read sensor data.
 from rclpy.qos import ReliabilityPolicy, QoSProfile
 import math
+import re
 
 
 
 LINEAR_VEL = 0.22
-STOP_DISTANCE = 0.35
-LIDAR_ERROR = 0.10
+STOP_DISTANCE = 0.5
+LIDAR_ERROR = 0.05
 LIDAR_AVOID_DISTANCE = 0.7
 SAFE_STOP_DISTANCE = STOP_DISTANCE + LIDAR_ERROR
 RIGHT_SIDE_INDEX = 270
 RIGHT_FRONT_INDEX = 210
 LEFT_FRONT_INDEX=150
 LEFT_SIDE_INDEX=90
+MIN_RIGHT_WALL = 0.2
+MAX_RIGHT_WALL = 1.0
+
 
 class RandomWalk(Node):
 
@@ -101,27 +105,43 @@ class RandomWalk(Node):
         #self.get_logger().info('left scan slice: "%s"'%  min(left_lidar_samples))
         #self.get_logger().info('front scan slice: "%s"'%  min(front_lidar_samples))
         #self.get_logger().info('right scan slice: "%s"'%  min(right_lidar_samples))
+        # Need to get to wall on right side, and keep following it within the range
 
         if front_lidar_min < SAFE_STOP_DISTANCE:
             if self.turtlebot_moving == True:
                 self.cmd.linear.x = 0.0
-                self.cmd.angular.z = -(math.pi/8.0)
+                self.cmd.angular.z = 0.5 #Max rotate left
                 self.publisher_.publish(self.cmd)
-                self.turtlebot_moving = False
                 self.get_logger().info('Stopping')
                 return
         elif front_lidar_min < LIDAR_AVOID_DISTANCE:
-                self.cmd.linear.x = 0.03
-                if (right_lidar_min > left_lidar_min):
-                   self.cmd.angular.z = -(math.pi/8.0)
-                else:
-                   self.cmd.angular.z = (math.pi/16.0)
+                self.cmd.linear.x = 0.05 #slow it daaahn bbgirl
+                if (right_lidar_min > left_lidar_min): #corner on front left, get back to right following
+                   self.cmd.angular.z = -0.5 #max turn right
+                #no turning left because we want to stay on right walls
                 self.publisher_.publish(self.cmd)
                 self.get_logger().info('Turning')
                 self.turtlebot_moving = True
+                return
         else:
             self.cmd.linear.x = 0.2
-            self.cmd.linear.z = 0.0
+            self.cmd.angular.z = 0.0
+            if right_lidar_min > MAX_RIGHT_WALL: #if too far from right wall
+                self.cmd.angular.z = -0.5
+                self.cmd.linear.x = 0.1 # slow down a bit and turn towards the wall
+
+            elif right_lidar_min < MIN_RIGHT_WALL: #too close, turn a little left
+                self.cmd.angular.z = 0.5
+                self.cmd.linear.x = 0.1
+            elif right_lidar_min > (MAX_RIGHT_WALL / 2.0): #good enough, adjust angular properly
+                
+                adjustedAngularSpeed = (right_lidar_min - 0.5) / (1.0 - 0.5)
+
+                
+                self.cmd.angular.z = -0.20 * (adjustedAngularSpeed ** 0.5) #Adjust that thang
+                self.cmd.linear.x = 0.15 #not too fast since we turning a bit
+            
+
             self.publisher_.publish(self.cmd)
             self.turtlebot_moving = True
             
