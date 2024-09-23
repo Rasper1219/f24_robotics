@@ -10,6 +10,7 @@ from nav_msgs.msg import Odometry
 from rclpy.qos import ReliabilityPolicy, QoSProfile
 import math
 import re
+import os
 
 
 
@@ -25,69 +26,133 @@ LEFT_SIDE_INDEX=90
 MIN_RIGHT_WALL = 0.2
 MAX_RIGHT_WALL = 1.0
 
+def extract_turtlebot_start(file_path):
+    translation = None
+    rotation = None
+    in_turtlebot_section = False
+
+    with open(file_path, 'r') as file:
+        for line in file:
+            # Ignore commented-out lines
+            line = line.strip()
+            if line.startswith('#') or not line:
+                continue
+
+            # Check if entering TurtleBot3Burger section
+            if 'TurtleBot3Burger {' in line:
+                in_turtlebot_section = True
+
+            # Exit TurtleBot3Burger section
+            if in_turtlebot_section and '}' in line:
+                break
+
+            # Extract translation and rotation if within the TurtleBot3Burger block
+            if in_turtlebot_section:
+                translation_match = re.match(r'translation\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)', line)
+                rotation_match = re.match(r'rotation\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)', line)
+
+                if translation_match:
+                    translation = tuple(map(float, translation_match.groups()))
+                elif rotation_match:
+                    rotation = tuple(map(float, rotation_match.groups()))
+
+    if translation and rotation:
+        return {'translation': translation, 'rotation': rotation}
+    else:
+        return "TurtleBot3Burger start values not found."
+
 
 class RandomWalk(Node):
 
     def __init__(self):
-        # Initialize the publisher
+        # Initialize the node with the name 'random_walk_node'
         super().__init__('random_walk_node')
-        self.scan_cleaned = []
-        self.stall = False
-        self.turtlebot_moving = False
+        
+        # Initialize variables for storing sensor data and robot state
+        self.scan_cleaned = []  # Cleaned LIDAR data (filtered and processed)
+        self.stall = False  # Flag to detect if the robot is stalled
+        self.turtlebot_moving = False  # Flag to indicate if the robot is currently moving
+        self.first_pos_store = False  # Flag to store the first position of the robot
+        
+        # Create a publisher for controlling the robot's velocity
         self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)
+        
+        # Subscribe to the LIDAR scan topic to receive distance measurements
         self.subscriber1 = self.create_subscription(
             LaserScan,
             '/scan',
             self.listener_callback1,
             QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT))
+        
+        # Subscribe to the odometry topic to receive position and orientation data
         self.subscriber2 = self.create_subscription(
             Odometry,
             '/odom',
             self.listener_callback2,
             QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT))
-        self.laser_forward = 0
-        self.odom_data = 0
+        
+        # Initialize additional variables for controlling the robot
+        self.laser_forward = 0  # Variable to store forward LIDAR data
+        self.odom_data = 0  # Variable to store odometry data
+        self.pose_saved = ''  # Variable to save the robot's position
+        self.cmd = Twist()  # Twist message used to control the robot's velocity
+        
+        # Create a timer to call the timer_callback function periodically (every 0.5 seconds)
         timer_period = 0.5
-        self.pose_saved=''
-        self.cmd = Twist()
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
-
     def listener_callback1(self, msg1):
-        #self.get_logger().info('scan: "%s"' % msg1.ranges)
+        """Callback function to process incoming LIDAR scan data."""
+        # Store the received scan data in a temporary variable
         scan = msg1.ranges
+        
+        # Clear the cleaned scan data list before processing new data
         self.scan_cleaned = []
-       
-        #self.get_logger().info('scan: "%s"' % scan)
-        # Assume 360 range measurements
+        
+        # Process the raw scan data to handle infinite distances and NaN values
         for reading in scan:
             if reading == float('Inf'):
+                # Replace 'Inf' readings with a maximum distance value
                 self.scan_cleaned.append(3.5)
             elif math.isnan(reading):
+                # Replace 'NaN' readings with zero
                 self.scan_cleaned.append(0.0)
             else:
-            	self.scan_cleaned.append(reading)
-
-
+                # Keep valid readings as they are
+                self.scan_cleaned.append(reading)
 
     def listener_callback2(self, msg2):
+        """Callback function to process incoming odometry data."""
+        # Extract position and orientation data from the odometry message
         position = msg2.pose.pose.position
         orientation = msg2.pose.pose.orientation
-        (posx, posy, posz) = (position.x, position.y, position.z)
-        (qx, qy, qz, qw) = (orientation.x, orientation.y, orientation.z, orientation.w)
-        self.get_logger().info('self position: {},{},{}'.format(posx,posy,posz));
-        # similarly for twist message if you need
-        self.pose_saved=position
         
-        #Example of how to identify a stall..need better tuned position deltas; wheels spin and example fast
-        #diffX = math.fabs(self.pose_saveangulard.x- position.x)
-        #diffY = math.fabs(self.pose_saved.y - position.y)
-        #if (diffX < 0.0001 and diffY < 0.0001):
-           #self.stall = True
-        #else:
-           #self.stall = False
-           
-        return None
+        self.pose_saved = position
+
+        if not self.first_pos_store:
+            file_path = '/home/ryan/Desktop/CS560/HW1/f24_robotics/webots_ros2_homework1_python/worlds/f23_robotics_1.wbt'
+            turtlebot_start = extract_turtlebot_start(file_path)
+            self.first_pos_store = True
+            counter = 0
+            # Grab the files in the directory, and check the highest number
+            for file in os.listdir('Homework1/Data'):
+                if file.startswith('robot_position') and str(turtlebot_start["translation"]) in file:
+                    counter = max(counter, int(file.split('_')[-1].split('.')[0]))
+
+            counter += 1
+
+            self.file_name = f'Homework1/Data/robot_position_{turtlebot_start["translation"]}_{counter}.txt'
+
+            with open(self.file_name, 'w') as f:
+                if turtlebot_start != "TurtleBot3Burger start values not found.":
+                    f.write(f'start -> translation: {turtlebot_start["translation"]}| rotation: {turtlebot_start["rotation"]}\n')
+
+                f.write(f'x: {self.pose_saved.x}, y: {self.pose_saved.y}\n')
+            self.store_timer = self.create_timer(5, self.store_timer_callback)
+
+    def store_timer_callback(self):
+        with open(self.file_name, 'a') as f:
+            f.write(f'x: {self.pose_saved.x}, y: {self.pose_saved.y}\n')
         
     def timer_callback(self):
         if (len(self.scan_cleaned)==0):
