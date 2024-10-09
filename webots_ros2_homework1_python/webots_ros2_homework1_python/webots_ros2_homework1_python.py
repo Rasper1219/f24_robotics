@@ -1,240 +1,85 @@
 import rclpy
-# import the ROS2 python libraries
 from rclpy.node import Node
-# import the Twist module from geometry_msgs interface
 from geometry_msgs.msg import Twist
-# import the LaserScan module from sensor_msgs interface
-from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-# import Quality of Service library, to set the correct profile and reliability in order to read sensor data.
-from rclpy.qos import ReliabilityPolicy, QoSProfile
 import math
-import re
-import os
+import time
 
-
-
-LINEAR_VEL = 0.22
-STOP_DISTANCE = 0.5
-LIDAR_ERROR = 0.05
-LIDAR_AVOID_DISTANCE = 0.7
-SAFE_STOP_DISTANCE = STOP_DISTANCE + LIDAR_ERROR
-RIGHT_SIDE_INDEX = 270
-RIGHT_FRONT_INDEX = 210
-LEFT_FRONT_INDEX=150
-LEFT_SIDE_INDEX=90
-MIN_RIGHT_WALL = 0.2
-MAX_RIGHT_WALL = 1.0
-
-def extract_turtlebot_start(file_path):
-    translation = None
-    rotation = None
-    in_turtlebot_section = False
-
-    with open(file_path, 'r') as file:
-        for line in file:
-            # Ignore commented-out lines
-            line = line.strip()
-            if line.startswith('#') or not line:
-                continue
-
-            # Check if entering TurtleBot3Burger section
-            if 'TurtleBot3Burger {' in line:
-                in_turtlebot_section = True
-
-            # Exit TurtleBot3Burger section
-            if in_turtlebot_section and '}' in line:
-                break
-
-            # Extract translation and rotation if within the TurtleBot3Burger block
-            if in_turtlebot_section:
-                translation_match = re.match(r'translation\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)', line)
-                rotation_match = re.match(r'rotation\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)', line)
-
-                if translation_match:
-                    translation = tuple(map(float, translation_match.groups()))
-                elif rotation_match:
-                    rotation = tuple(map(float, rotation_match.groups()))
-
-    if translation and rotation:
-        return {'translation': translation, 'rotation': rotation}
-    else:
-        return "TurtleBot3Burger start values not found."
-
-
-class RandomWalk(Node):
-
+class RotateRobot(Node):
     def __init__(self):
-        # Initialize the node with the name 'random_walk_node'
-        super().__init__('random_walk_node')
-        
-        # Initialize variables for storing sensor data and robot state
-        self.scan_cleaned = []  # Cleaned LIDAR data (filtered and processed)
-        self.stall = False  # Flag to detect if the robot is stalled
-        self.turtlebot_moving = False  # Flag to indicate if the robot is currently moving
-        self.first_pos_store = False  # Flag to store the first position of the robot
-        
-        # Create a publisher for controlling the robot's velocity
+        super().__init__('rotate_robot')
         self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)
-        
-        # Subscribe to the LIDAR scan topic to receive distance measurements
-        self.subscriber1 = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.listener_callback1,
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT))
-        
-        # Subscribe to the odometry topic to receive position and orientation data
-        self.subscriber2 = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.listener_callback2,
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT))
-        
-        # Initialize additional variables for controlling the robot
-        self.laser_forward = 0  # Variable to store forward LIDAR data
-        self.odom_data = 0  # Variable to store odometry data
-        self.pose_saved = ''  # Variable to save the robot's position
-        self.cmd = Twist()  # Twist message used to control the robot's velocity
-        
-        # Create a timer to call the timer_callback function periodically (every 0.5 seconds)
-        timer_period = 0.5
-        self.timer = self.create_timer(timer_period, self.timer_callback)
+        self.odom_subscriber = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.timer = self.create_timer(0.1, self.timer_callback)
+        self.start_yaw = None  # Store initial yaw angle
+        self.current_yaw = None
+        self.total_rotation = 0.0  # Track total rotation
+        self.target_rotation = math.radians(360)  # Target rotation in radians (180 degrees)
+        self.rotation_speed = math.radians(120)  # Rotation speed in radians/sec (30 degrees/sec)
 
-    def listener_callback1(self, msg1):
-        """Callback function to process incoming LIDAR scan data."""
-        # Store the received scan data in a temporary variable
-        scan = msg1.ranges
-        
-        # Clear the cleaned scan data list before processing new data
-        self.scan_cleaned = []
-        
-        # Process the raw scan data to handle infinite distances and NaN values
-        for reading in scan:
-            if reading == float('Inf'):
-                # Replace 'Inf' readings with a maximum distance value
-                self.scan_cleaned.append(3.5)
-            elif math.isnan(reading):
-                # Replace 'NaN' readings with zero
-                self.scan_cleaned.append(0.0)
-            else:
-                # Keep valid readings as they are
-                self.scan_cleaned.append(reading)
+        self.start_time = time.time()  # Record the start time for the simulation
 
-    def listener_callback2(self, msg2):
-        """Callback function to process incoming odometry data."""
-        # Extract position and orientation data from the odometry message
-        position = msg2.pose.pose.position
-        orientation = msg2.pose.pose.orientation
-        
-        self.pose_saved = position
+    def quaternion_to_euler_yaw(self, x, y, z, w):
+        # Convert quaternion to yaw (rotation around the z-axis)
+        t3 = 2.0 * (w * z + x * y)
+        t4 = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(t3, t4)
 
-        if not self.first_pos_store:
-            file_path = '/home/ryan/Desktop/CS560/HW1/f24_robotics/webots_ros2_homework1_python/worlds/f23_robotics_1.wbt'
-            turtlebot_start = extract_turtlebot_start(file_path)
-            self.first_pos_store = True
-            counter = 0
-            # Grab the files in the directory, and check the highest number
-            for file in os.listdir('Homework1/Data'):
-                if file.startswith('robot_position') and str(turtlebot_start["translation"]) in file:
-                    counter = max(counter, int(file.split('_')[-1].split('.')[0]))
+    def odom_callback(self, msg):
+        # Extract orientation quaternion from odometry message
+        orientation_q = msg.pose.pose.orientation
+        self.current_yaw = self.quaternion_to_euler_yaw(orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w)
 
-            counter += 1
+        # Initialize the start yaw when rotation begins
+        if self.start_yaw is None:
+            self.start_yaw = self.current_yaw
 
-            self.file_name = f'Homework1/Data/robot_position_{turtlebot_start["translation"]}_{counter}.txt'
-
-            with open(self.file_name, 'w') as f:
-                if turtlebot_start != "TurtleBot3Burger start values not found.":
-                    f.write(f'start -> translation: {turtlebot_start["translation"]}| rotation: {turtlebot_start["rotation"]}\n')
-
-                f.write(f'x: {self.pose_saved.x}, y: {self.pose_saved.y}\n')
-            self.store_timer = self.create_timer(5, self.store_timer_callback)
-
-    def store_timer_callback(self):
-        with open(self.file_name, 'a') as f:
-            f.write(f'x: {self.pose_saved.x}, y: {self.pose_saved.y}\n')
-        
     def timer_callback(self):
-        if (len(self.scan_cleaned)==0):
-    	    self.turtlebot_moving = False
-    	    return
-    	    
-        #left_lidar_samples = self.scan_cleaned[LEFT_SIDE_INDEX:LEFT_FRONT_INDEX]
-        #right_lidar_samples = self.scan_cleaned[RIGHT_FRONT_INDEX:RIGHT_SIDE_INDEX]
-        #front_lidar_samples = self.scan_cleaned[LEFT_FRONT_INDEX:RIGHT_FRONT_INDEX]
-        
-        left_lidar_min = min(self.scan_cleaned[LEFT_SIDE_INDEX:LEFT_FRONT_INDEX])
-        right_lidar_min = min(self.scan_cleaned[RIGHT_FRONT_INDEX:RIGHT_SIDE_INDEX])
-        front_lidar_min = min(self.scan_cleaned[LEFT_FRONT_INDEX:RIGHT_FRONT_INDEX])
+        if self.current_yaw is None or self.start_yaw is None:
+            return  # Wait until odometry data is received
 
-        #self.get_logger().info('left scan slice: "%s"'%  min(left_lidar_samples))
-        #self.get_logger().info('front scan slice: "%s"'%  min(front_lidar_samples))
-        #self.get_logger().info('right scan slice: "%s"'%  min(right_lidar_samples))
-        # Need to get to wall on right side, and keep following it within the range
+        # Calculate the amount of rotation between the previous and current yaw
+        yaw_diff = self.current_yaw - self.start_yaw
 
-        if front_lidar_min < SAFE_STOP_DISTANCE:
-            if self.turtlebot_moving == True:
-                self.cmd.linear.x = 0.0
-                self.cmd.angular.z = 0.5 #Max rotate left
-                self.publisher_.publish(self.cmd)
-                self.get_logger().info('Stopping')
-                return
-        elif front_lidar_min < LIDAR_AVOID_DISTANCE:
-                self.cmd.linear.x = 0.05 #slow it daaahn bbgirl
-                if (right_lidar_min > left_lidar_min): #corner on front left, get back to right following
-                   self.cmd.angular.z = -0.5 #max turn right
-                #no turning left because we want to stay on right walls
-                self.publisher_.publish(self.cmd)
-                self.get_logger().info('Turning')
-                self.turtlebot_moving = True
-                return
+        # Adjust for wraparound (-pi to pi)
+        if yaw_diff > math.pi:
+            yaw_diff -= 2 * math.pi
+        elif yaw_diff < -math.pi:
+            yaw_diff += 2 * math.pi
+
+        # Accumulate the total rotation
+        self.total_rotation += yaw_diff
+        self.start_yaw = self.current_yaw  # Update start_yaw for the next calculation
+
+        # Create the Twist message for rotation
+        cmd = Twist()
+
+        if abs(self.total_rotation) < abs(self.target_rotation):
+            cmd.angular.z = self.rotation_speed  # Rotate at 30 degrees per second
+            self.publisher_.publish(cmd)
+
+            # Print the current time and rotation to the console
+            current_time = time.time() - self.start_time
+            print(f"Time: {current_time:.2f}s, Total Rotation: {math.degrees(self.total_rotation):.2f} degrees")
+
+            # Log to the console as well
+            self.get_logger().info(f"Rotating... Total Rotation: {math.degrees(self.total_rotation):.2f} degrees")
         else:
-            self.cmd.linear.x = 0.2
-            self.cmd.angular.z = 0.0
-            if right_lidar_min > MAX_RIGHT_WALL: #if too far from right wall
-                self.cmd.angular.z = -0.5
-                self.cmd.linear.x = 0.1 # slow down a bit and turn towards the wall
+            # Stop the robot after reaching the target rotation
+            cmd.angular.z = 0.0
+            self.publisher_.publish(cmd)
+            self.get_logger().info(f"Rotation complete. Robot has turned {math.degrees(self.total_rotation):.2f} degrees.")
 
-            elif right_lidar_min < MIN_RIGHT_WALL: #too close, turn a little left
-                self.cmd.angular.z = 0.5
-                self.cmd.linear.x = 0.1
-            elif right_lidar_min > (MAX_RIGHT_WALL / 2.0): #good enough, adjust angular properly
-                
-                adjustedAngularSpeed = (right_lidar_min - 0.5) / (1.0 - 0.5)
-
-                
-                self.cmd.angular.z = -0.20 * (adjustedAngularSpeed ** 0.5) #Adjust that thang
-                self.cmd.linear.x = 0.15 #not too fast since we turning a bit
-            
-
-            self.publisher_.publish(self.cmd)
-            self.turtlebot_moving = True
-            
-
-        self.get_logger().info('Distance of the obstacle : %f' % front_lidar_min)
-        self.get_logger().info('I receive: "%s"' %
-                               str(self.odom_data))
-        if self.stall == True:
-           self.get_logger().info('Stall reported')
-        
-        # Display the message on the console
-        self.get_logger().info('Publishing: "%s"' % self.cmd)
- 
-
+            # Print completion to the console
+            current_time = time.time() - self.start_time
+            print(f"Rotation complete at {current_time:.2f} seconds.")
 
 def main(args=None):
-    # initialize the ROS communication
     rclpy.init(args=args)
-    # declare the node constructor
-    random_walk_node = RandomWalk()
-    # pause the program execution, waits for a request to kill the node (ctrl+c)
-    rclpy.spin(random_walk_node)
-    # Explicity destroy the node
-    random_walk_node.destroy_node()
-    # shutdown the ROS communication
+    rotate_robot = RotateRobot()
+    rclpy.spin(rotate_robot)
+    rotate_robot.destroy_node()
     rclpy.shutdown()
-
-
 
 if __name__ == '__main__':
     main()
